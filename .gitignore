@@ -1,4 +1,4 @@
-﻿dataset/
+dataset/
 business_entity_resolution/output/
 business_entity_resolution/venv/
 *.pkl
@@ -9,3 +9,4 @@ business_entity_resolution/venv/
 __MACOSX/
 __pycache__/
 *.pyc
+powershell.bat
