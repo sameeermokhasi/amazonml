@@ -399,11 +399,12 @@ def parse_exploration_output_fallback() -> Dict[str, Dict[str, Any]]:
 def load_source_records(
     source_num: int,
     needed_ids: Optional[Set[str]] = None,
+    dataset_type: str = "train",
 ) -> Dict[str, Dict[str, Any]]:
     """
     Loads entity records for Source 1, 2, or 3 following the roadmap data loading strategy:
-    1. First looks for cleaned Parquet files (dataset_processed/train_source{N}_clean.parquet)
-    2. Falls back to raw training TSVs (dataset/train/train_source{N}.tsv) and performs basic cleaning
+    1. First looks for cleaned Parquet files (dataset_processed/{dataset_type}_source{N}_clean.parquet)
+    2. Falls back to raw training TSVs (dataset/{dataset_type}/{dataset_type}_source{N}.tsv) and performs basic cleaning
     3. Falls back to sample registry / exploration artifacts for local candidate testing
     """
     label = f"Source {source_num}"
@@ -411,8 +412,7 @@ def load_source_records(
 
     # 1. Check for cleaned Parquet file
     clean_parquet_candidates = [
-        f"dataset_processed/train_source{source_num}_clean.parquet",
-        f"dataset_processed/test_source{source_num}_clean.parquet",
+        f"dataset_processed/{dataset_type}_source{source_num}_clean.parquet",
     ]
     clean_path: Optional[Path] = None
     for cand in clean_parquet_candidates:
@@ -731,6 +731,7 @@ def generate_candidate_features(
 def run_feature_pipeline(
     candidate_path_str: str,
     output_path_str: Optional[str] = None,
+    dataset_type: str = "train",
 ) -> Path:
     """
     Executes the end-to-end feature extraction pipeline:
@@ -785,9 +786,9 @@ def run_feature_pipeline(
 
     # 3. Load entity records across sources
     print("\nLoading entity records across sources...")
-    s1_records = load_source_records(1, needed_ids=s1_ids)
-    s2_records = load_source_records(2, needed_ids=(s2_ids | other_ids))
-    s3_records = load_source_records(3, needed_ids=(s3_ids | other_ids))
+    s1_records = load_source_records(1, needed_ids=s1_ids, dataset_type=dataset_type)
+    s2_records = load_source_records(2, needed_ids=(s2_ids | other_ids), dataset_type=dataset_type)
+    s3_records = load_source_records(3, needed_ids=(s3_ids | other_ids), dataset_type=dataset_type)
 
     # Combine into a single fast lookup
     entity_lookup: Dict[str, Dict[str, Any]] = {}
@@ -859,10 +860,19 @@ def main():
         help="Optional path to output features parquet file (default: dataset_processed/features_fake_sample.parquet)",
     )
 
+    parser.add_argument(
+        "--dataset_type",
+        type=str,
+        default="train",
+        choices=["train", "test"],
+        help="Dataset type (train or test)",
+    )
+
     args = parser.parse_args()
     run_feature_pipeline(
         candidate_path_str=args.candidates,
         output_path_str=args.output,
+        dataset_type=args.dataset_type,
     )
 
 

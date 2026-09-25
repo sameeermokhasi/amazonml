@@ -126,6 +126,7 @@ def process_blocking(
     output_filename: str = "candidate_pairs_raw.parquet",
     batch_size: int = 50_000,
     top_k: int = 25,
+    dataset_type: str = "train",
 ) -> Path:
     """
     Orchestrates candidate pair generation across countries (or a single target country).
@@ -141,9 +142,9 @@ def process_blocking(
         print("MODE: FULL RUN on Source 1 entities", flush=True)
 
     # 1. Locate cleaned parquet files
-    s1_path = resolve_path("dataset_processed/train_source1_clean.parquet")
-    s2_path = resolve_path("dataset_processed/train_source2_clean.parquet")
-    s3_path = resolve_path("dataset_processed/train_source3_clean.parquet")
+    s1_path = resolve_path(f"dataset_processed/{dataset_type}_source1_clean.parquet")
+    s2_path = resolve_path(f"dataset_processed/{dataset_type}_source2_clean.parquet")
+    s3_path = resolve_path(f"dataset_processed/{dataset_type}_source3_clean.parquet")
 
     for label, p in [("Source 1", s1_path), ("Source 2", s2_path), ("Source 3", s3_path)]:
         if not p.exists():
@@ -213,7 +214,7 @@ def process_blocking(
 
         # Build country inverted index
         inv_idx, cand_ids, common_tokens = build_country_inverted_index(
-            cands_country, country, common_threshold_pct=0.05
+            cands_country, country, common_threshold_pct=0.005
         )
 
         s1_ids = s1_country["entity_id"].tolist()
@@ -374,6 +375,13 @@ def main():
         default=25,
         help="Maximum candidate records to keep per Source 1 entity (default: 25)",
     )
+    parser.add_argument(
+        "--dataset_type",
+        type=str,
+        default="train",
+        choices=["train", "test"],
+        help="Dataset type to process (train or test)",
+    )
 
     args = parser.parse_args()
     process_blocking(
@@ -382,6 +390,7 @@ def main():
         output_filename=args.output,
         batch_size=args.batch_size,
         top_k=args.top_k,
+        dataset_type=args.dataset_type,
     )
 
 

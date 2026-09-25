@@ -15,3 +15,7 @@ __MACOSX/
 __pycache__/
 *.pyc
 powershell.bat
+dataset/
+dataset_processed/
+*.parquet
+output/candidate_pairs.tsv

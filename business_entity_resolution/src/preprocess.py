@@ -28,6 +28,7 @@ from typing import Dict, Optional, Any
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import argparse
 import unidecode
 
 
@@ -302,14 +303,20 @@ def process_and_save_source(
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset_type", type=str, default="train", choices=["train", "test"])
+    args, _ = parser.parse_known_args()
+    
+    dataset_type = args.dataset_type
+
     print("=" * 80)
     print("      BUSINESS ENTITY RESOLUTION - PREPROCESSING PIPELINE")
     print("=" * 80)
 
     # Locate inputs
-    s1_path = resolve_path("dataset/train/train_source1.tsv")
-    s2_path = resolve_path("dataset/train/train_source2.tsv")
-    s3_path = resolve_path("dataset/train/train_source3.tsv")
+    s1_path = resolve_path(f"dataset/{dataset_type}/{dataset_type}_source1.tsv")
+    s2_path = resolve_path(f"dataset/{dataset_type}/{dataset_type}_source2.tsv")
+    s3_path = resolve_path(f"dataset/{dataset_type}/{dataset_type}_source3.tsv")
 
     # Locate/prepare output directory
     output_dir = resolve_path("dataset_processed")
@@ -322,9 +329,9 @@ def main():
     print(f"Input Directory : {s1_path.parent}")
     print(f"Output Directory: {output_dir}")
 
-    s1_out = output_dir / "train_source1_clean.parquet"
-    s2_out = output_dir / "train_source2_clean.parquet"
-    s3_out = output_dir / "train_source3_clean.parquet"
+    s1_out = output_dir / f"{dataset_type}_source1_clean.parquet"
+    s2_out = output_dir / f"{dataset_type}_source2_clean.parquet"
+    s3_out = output_dir / f"{dataset_type}_source3_clean.parquet"
 
     # Process all three sources
     t_global_start = time.time()
