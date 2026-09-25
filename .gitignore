@@ -1,8 +1,13 @@
 dataset/
+dataset_processed/*
+!dataset_processed/candidate_pairs_fake_sample.parquet
 business_entity_resolution/output/
 business_entity_resolution/venv/
 *.pkl
 *.model
+*.parquet
+!dataset_processed/candidate_pairs_fake_sample.parquet
+candidate_pairs_raw.parquet
 !requirements.txt
 .DS_Store
 ._*
