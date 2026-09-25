@@ -1,0 +1,11 @@
+﻿dataset/
+business_entity_resolution/output/
+business_entity_resolution/venv/
+*.pkl
+*.model
+!requirements.txt
+.DS_Store
+._*
+__MACOSX/
+__pycache__/
+*.pyc
