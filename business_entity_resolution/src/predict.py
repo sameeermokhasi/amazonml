@@ -11,6 +11,7 @@ def resolve_path(rel_path_str: str) -> Path:
         Path("..") / rel_path_str,
         Path(__file__).resolve().parent.parent / rel_path_str,
         Path(__file__).resolve().parent.parent.parent / rel_path_str,
+        Path("/Users/yashaswini/Desktop") / rel_path_str,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -31,7 +32,7 @@ def main():
     # run_cmd("python3 src/preprocess.py --dataset_type test")
 
     # 2. Blocking
-    run_cmd("python3 src/blocking.py --dataset_type test --output test_candidate_pairs.parquet --batch_size 100000")
+    run_cmd("python3 src/blocking.py --dataset_type test --output test_candidate_pairs.parquet --batch_size 100000 --top_k 15")
 
     # 3. Features
     run_cmd("python3 src/features.py --dataset_type test --candidates dataset_processed/test_candidate_pairs.parquet --output dataset_processed/test_features.parquet")
@@ -50,6 +51,8 @@ def main():
         "house_number_exact",
         "same_first_name_token",
         "shared_token_count",
+        "name_tfidf_cosine",
+        "address_tfidf_cosine",
     ]
     X = df_feat[feature_cols]
     
@@ -66,8 +69,23 @@ def main():
     
     # 5. Apply chosen threshold
     THRESHOLD = 0.50
+    AMBIGUITY_MARGIN = 0.02
     print(f"\nApplying threshold {THRESHOLD} to determine matches...")
+    print(f"Ambiguity margin: {AMBIGUITY_MARGIN} (drop entity if top two candidates are within this gap)")
     df_matches = df_feat[df_feat['probability'] >= THRESHOLD].copy()
+    
+    # 5b. Ambiguity filter
+    if AMBIGUITY_MARGIN > 0:
+        ambiguous_entities = set()
+        for s1_id, grp in df_matches.groupby('source1_entity_id'):
+            if len(grp) >= 2:
+                sorted_probs = grp['probability'].sort_values(ascending=False).values
+                gap = sorted_probs[0] - sorted_probs[1]
+                if gap < AMBIGUITY_MARGIN:
+                    ambiguous_entities.add(s1_id)
+        if ambiguous_entities:
+            print(f"  Dropped {len(ambiguous_entities)} ambiguous entities (top-2 gap < {AMBIGUITY_MARGIN})")
+            df_matches = df_matches[~df_matches['source1_entity_id'].isin(ambiguous_entities)]
     
     # 6. Apply one-to-one resolution
     print("\nApplying one-to-one resolution (candidate can only match one S1 entity)...")

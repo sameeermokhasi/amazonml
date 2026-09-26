@@ -26,7 +26,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
+# pyrefly: ignore [missing-import]
 import pyarrow as pa
+# pyrefly: ignore [missing-import]
 import pyarrow.parquet as pq
 
 
@@ -483,12 +485,12 @@ def main():
         "--common_threshold",
         type=float,
         default=None,
-        help="Override country-aware common token threshold (e.g. 0.05 for 5%)",
+        help="Override country-aware common token threshold (e.g. 0.05 for 5%%)",
     )
     parser.add_argument(
         "--yesterday",
         action="store_true",
-        help="Run yesterday's baseline configuration (no postal key, 5% fixed threshold)",
+        help="Run yesterday's baseline configuration (no postal key, 5%% fixed threshold)",
     )
     parser.add_argument(
         "--no_eval",
