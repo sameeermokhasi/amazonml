@@ -44,6 +44,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import unidecode
+import numpy as np
+import joblib
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 # Verify and report RapidFuzz dependency for similarity metrics
 try:
@@ -619,9 +622,11 @@ def calc_same_first_token(name1: Optional[str], name2: Optional[str]) -> int:
 def generate_candidate_features(
     df_candidates: pd.DataFrame,
     entity_lookup: Dict[str, Dict[str, Any]],
+    name_vectorizer: Optional[TfidfVectorizer] = None,
+    addr_vectorizer: Optional[TfidfVectorizer] = None,
 ) -> pd.DataFrame:
     """
-    Calculates the 9 roadmap matching features for every candidate pair:
+    Calculates the 11 matching features for every candidate pair:
     1. name_token_sort_ratio
     2. name_token_set_ratio
     3. name_jaro_winkler
@@ -631,21 +636,25 @@ def generate_candidate_features(
     7. house_number_exact
     8. same_first_name_token
     9. shared_token_count (preserved)
+    10. name_tfidf_cosine: TF-IDF cosine similarity between cleaned names
+    11. address_tfidf_cosine: TF-IDF cosine similarity between cleaned addresses
 
     Guarantees no NaN values in the final feature DataFrame.
     """
     n_pairs = len(df_candidates)
     features: List[Dict[str, Any]] = []
 
-    for idx, row in df_candidates.iterrows():
-        s1_id = str(row["source1_entity_id"])
-        cand_id = str(row["candidate_entity_id"])
-        country = str(row.get("country", ""))
-        shared_tok = row.get("shared_token_count", 0)
-        try:
-            shared_tok = int(shared_tok) if not pd.isna(shared_tok) else 0
-        except (ValueError, TypeError):
-            shared_tok = 0
+    s1_names: List[str] = []
+    c_names: List[str] = []
+    s1_addrs: List[str] = []
+    c_addrs: List[str] = []
+
+    s1_ids_list = df_candidates["source1_entity_id"].astype(str).tolist()
+    cand_ids_list = df_candidates["candidate_entity_id"].astype(str).tolist()
+    countries_list = df_candidates["country"].astype(str).tolist() if "country" in df_candidates.columns else [""] * n_pairs
+    shared_tok_list = df_candidates["shared_token_count"].fillna(0).astype(int).tolist() if "shared_token_count" in df_candidates.columns else [0] * n_pairs
+
+    for s1_id, cand_id, country, shared_tok in zip(s1_ids_list, cand_ids_list, countries_list, shared_tok_list):
 
         s1_rec = entity_lookup.get(s1_id, {})
         c_rec = entity_lookup.get(cand_id, {})
@@ -654,6 +663,11 @@ def generate_candidate_features(
         c_name = c_rec.get("cleaned_name", "")
         s1_addr = s1_rec.get("cleaned_address", "")
         c_addr = c_rec.get("cleaned_address", "")
+
+        s1_names.append(s1_name)
+        c_names.append(c_name)
+        s1_addrs.append(s1_addr)
+        c_addrs.append(c_addr)
 
         # 1. name_token_sort_ratio
         name_sort = calc_token_sort_ratio(s1_name, c_name)
@@ -700,6 +714,22 @@ def generate_candidate_features(
 
     df_feat = pd.DataFrame(features)
 
+    # 10. TF-IDF Cosine Similarity between Cleaned Names
+    if name_vectorizer is not None and len(s1_names) > 0:
+        s1_n_vecs = name_vectorizer.transform(s1_names)
+        c_n_vecs = name_vectorizer.transform(c_names)
+        df_feat["name_tfidf_cosine"] = np.asarray(s1_n_vecs.multiply(c_n_vecs).sum(axis=1)).ravel().astype(float)
+    else:
+        df_feat["name_tfidf_cosine"] = 0.0
+
+    # 11. TF-IDF Cosine Similarity between Cleaned Addresses
+    if addr_vectorizer is not None and len(s1_addrs) > 0:
+        s1_a_vecs = addr_vectorizer.transform(s1_addrs)
+        c_a_vecs = addr_vectorizer.transform(c_addrs)
+        df_feat["address_tfidf_cosine"] = np.asarray(s1_a_vecs.multiply(c_a_vecs).sum(axis=1)).ravel().astype(float)
+    else:
+        df_feat["address_tfidf_cosine"] = 0.0
+
     # Enforce exact column order and explicit types
     cols = [
         "source1_entity_id",
@@ -714,11 +744,13 @@ def generate_candidate_features(
         "house_number_exact",
         "same_first_name_token",
         "shared_token_count",
+        "name_tfidf_cosine",
+        "address_tfidf_cosine",
     ]
     df_feat = df_feat[cols]
 
     # Explicit NaN check and fill
-    for c in ["name_token_sort_ratio", "name_token_set_ratio", "name_jaro_winkler", "address_token_sort_ratio", "address_jaro_winkler"]:
+    for c in ["name_token_sort_ratio", "name_token_set_ratio", "name_jaro_winkler", "address_token_sort_ratio", "address_jaro_winkler", "name_tfidf_cosine", "address_tfidf_cosine"]:
         df_feat[c] = df_feat[c].fillna(0.0).astype(float)
     for c in ["postal_code_exact", "house_number_exact", "same_first_name_token", "shared_token_count"]:
         df_feat[c] = df_feat[c].fillna(0).astype("int32")
@@ -738,9 +770,10 @@ def run_feature_pipeline(
     1. Loads candidate pairs.
     2. Identifies required entity IDs.
     3. Loads corresponding Source 1, 2, and 3 records.
-    4. Computes all 9 matching features.
-    5. Saves resulting feature table to Parquet.
-    6. Displays execution summary and verification stats.
+    4. Fits or loads TF-IDF vectorizers for names and addresses.
+    5. Computes all 11 matching features.
+    6. Saves resulting feature table to Parquet.
+    7. Displays execution summary and verification stats.
     """
     t_start = time.time()
     cand_path = resolve_path(candidate_path_str)
@@ -754,7 +787,6 @@ def run_feature_pipeline(
             out_path = resolve_path(output_path_str)
     else:
         # Default behavior:
-        # If candidate is candidate_pairs_fake_sample.parquet -> features_fake_sample.parquet
         output_dir = resolve_path("dataset_processed")
         output_dir.mkdir(parents=True, exist_ok=True)
         if "fake_sample" in cand_path.name:
@@ -768,6 +800,7 @@ def run_feature_pipeline(
     print(f"Candidates Input Path : {cand_path}")
     print(f"Output Parquet Path   : {out_path}")
     print(f"String Similarity Lib : RapidFuzz (Jaro-Winkler: rapidfuzz.distance.JaroWinkler)")
+    print(f"Text Vectorizer       : Scikit-learn TF-IDF (names & addresses)")
 
     # 1. Load candidate pairs
     df_candidates = pd.read_parquet(cand_path)
@@ -801,15 +834,45 @@ def run_feature_pipeline(
     found_count = sum(1 for eid in all_needed if eid in entity_lookup)
     print(f"Total entity records loaded: {total_loaded:,} (Coverage: {found_count}/{len(all_needed)} required entities)")
 
-    # 4. Generate features
+    # 4. TF-IDF vectorizers: fit on training corpus and save with joblib (or load for test)
+    models_dir = resolve_path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+    name_vec_path = models_dir / "tfidf_name.joblib"
+    addr_vec_path = models_dir / "tfidf_address.joblib"
+
+    if dataset_type == "train" or not name_vec_path.exists() or not addr_vec_path.exists():
+        print("\nFitting TF-IDF vectorizers on corpus...")
+        all_corpus_names = [rec.get("cleaned_name", "") for rec in entity_lookup.values() if rec.get("cleaned_name")]
+        all_corpus_addrs = [rec.get("cleaned_address", "") for rec in entity_lookup.values() if rec.get("cleaned_address")]
+
+        name_vectorizer = TfidfVectorizer(max_features=50000, lowercase=False, token_pattern=r'(?u)\b\w+\b')
+        addr_vectorizer = TfidfVectorizer(max_features=50000, lowercase=False, token_pattern=r'(?u)\b\w+\b')
+
+        name_vectorizer.fit(all_corpus_names)
+        addr_vectorizer.fit(all_corpus_addrs)
+
+        joblib.dump(name_vectorizer, name_vec_path)
+        joblib.dump(addr_vectorizer, addr_vec_path)
+        print(f"Saved TF-IDF vectorizers to {models_dir} (tfidf_name.joblib, tfidf_address.joblib)")
+    else:
+        print(f"\nLoading existing TF-IDF vectorizers from {models_dir}...")
+        name_vectorizer = joblib.load(name_vec_path)
+        addr_vectorizer = joblib.load(addr_vec_path)
+
+    # 5. Generate features
     print(f"\nCalculating features for {n_candidates:,} candidate pairs...")
     t_feat_start = time.time()
-    df_features = generate_candidate_features(df_candidates, entity_lookup)
+    df_features = generate_candidate_features(
+        df_candidates,
+        entity_lookup,
+        name_vectorizer=name_vectorizer,
+        addr_vectorizer=addr_vectorizer,
+    )
     t_feat_end = time.time()
     print(f"Feature extraction completed in {t_feat_end - t_feat_start:.2f}s "
           f"({n_candidates / max(t_feat_end - t_feat_start, 0.001):.0f} pairs/s)")
 
-    # 5. Save output Parquet
+    # 6. Save output Parquet
     out_path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pandas(df_features, preserve_index=False)
     pq.write_table(table, str(out_path), compression="snappy")

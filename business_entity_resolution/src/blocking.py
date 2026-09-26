@@ -60,23 +60,43 @@ def get_tokens(name: str, address: str) -> Set[str]:
 def build_country_inverted_index(
     cand_df: pd.DataFrame,
     country: str,
-    common_threshold_pct: float = 0.05,
-) -> Tuple[Dict[str, List[int]], List[str], Set[str]]:
+    common_threshold_pct: Optional[float] = None,
+    use_postal: bool = True,
+) -> Tuple[Dict[str, List[int]], Dict[str, List[int]], List[str], Set[str], float]:
     """
     Builds an inverted index for candidate records (Source 2 + Source 3) within a country.
-    Excludes very common tokens that appear in > 5% of candidate records in that country.
+    Excludes very common tokens using a country-aware filter tuned to address lengths.
+    Builds a secondary index on postal codes for high-precision geographic blocking.
     Returns:
         - inverted_index: mapping token -> list of candidate integer indices
+        - postal_index: mapping postal_code -> list of candidate integer indices
         - cand_ids: list mapping candidate integer index -> candidate entity_id string
         - common_tokens: set of excluded high-frequency tokens
+        - effective_threshold_pct: the actual threshold percentage used
     """
     n_cands = len(cand_df)
-    max_doc_freq = common_threshold_pct * n_cands
     cand_ids = cand_df["entity_id"].tolist()
     names = cand_df["cleaned_name"].fillna("").tolist()
     addrs = cand_df["cleaned_address"].fillna("").tolist()
 
+    # Country-aware threshold tuned separately per country based on real address/token lengths
+    if common_threshold_pct is None:
+        # Indian addresses are significantly longer (mean ~15 tokens vs ~9 tokens for US).
+        # We sample address lengths to compute empirical average document length
+        # and scale the base 5% threshold proportionally to prevent over-filtering in longer addresses.
+        sample_lens = [len(get_tokens(n, a)) for n, a in zip(names[:10000], addrs[:10000])]
+        avg_doc_len = sum(sample_lens) / max(len(sample_lens), 1)
+        # Base 5% calibrated for 10-token document; scales with empirical length
+        effective_threshold_pct = max(0.02, min(0.12, 0.05 * (avg_doc_len / 10.0)))
+    else:
+        sample_lens = [len(get_tokens(n, a)) for n, a in zip(names[:10000], addrs[:10000])]
+        avg_doc_len = sum(sample_lens) / max(len(sample_lens), 1)
+        effective_threshold_pct = common_threshold_pct
+
+    max_doc_freq = effective_threshold_pct * n_cands
+
     print(f"\n--- Building Inverted Index for Country: {country} ({n_cands:,} candidate records) ---", flush=True)
+    print(f"  Average tokens per record: {avg_doc_len:.1f} | Country-aware threshold: {effective_threshold_pct*100:.2f}% (cutoff > {int(max_doc_freq):,} docs)", flush=True)
     t0 = time.time()
 
     # Pass 1: Compute document frequency for each token
@@ -89,7 +109,7 @@ def build_country_inverted_index(
     t_df = time.time() - t0
     print(
         f"  Total unique tokens: {len(doc_freq):,} | "
-        f"Excluded frequent tokens (> {common_threshold_pct*100:.0f}% = {int(max_doc_freq):,} docs): {len(common_tokens)}",
+        f"Excluded frequent tokens (> {effective_threshold_pct*100:.2f}%): {len(common_tokens)}",
         flush=True,
     )
     if common_tokens:
@@ -97,7 +117,7 @@ def build_country_inverted_index(
             [(t, doc_freq[t], doc_freq[t] / n_cands * 100) for t in common_tokens],
             key=lambda x: x[1],
             reverse=True,
-        )[:15]
+        )[:10]
         print("  Sample excluded frequent tokens:", flush=True)
         for t, cnt, pct in top_common:
             print(f"    - '{t}': in {cnt:,} records ({pct:.1f}%)", flush=True)
@@ -110,14 +130,68 @@ def build_country_inverted_index(
         for tok in tokens:
             inverted_index[tok].append(idx)
 
+    # Pass 3: Secondary blocking key on postal code
+    postal_index = defaultdict(list)
+    if use_postal and "postal_code" in cand_df.columns:
+        postals = cand_df["postal_code"].tolist()
+        for idx, pcode in enumerate(postals):
+            if pcode and pd.notna(pcode):
+                p_str = str(pcode).strip()
+                if p_str:
+                    postal_index[p_str].append(idx)
+
     t_idx = time.time() - t0_idx
     print(
-        f"  Inverted index populated: {len(inverted_index):,} indexed tokens "
-        f"in {t_idx:.2f}s ({n_cands / (t_df + t_idx):.0f} records/s total)",
+        f"  Inverted index populated: {len(inverted_index):,} tokens | "
+        f"Postal index: {len(postal_index):,} unique postal codes in {t_idx:.2f}s",
         flush=True,
     )
 
-    return inverted_index, cand_ids, common_tokens
+    return inverted_index, postal_index, cand_ids, common_tokens, effective_threshold_pct
+
+
+def evaluate_blocking_recall(
+    output_path: Path,
+    target_s1_ids: Set[str],
+    gt_path: Optional[Path] = None,
+) -> Tuple[float, int, int]:
+    """
+    Calculates blocking recall: % of true matches that appear anywhere in the candidate list.
+    """
+    if gt_path is None:
+        gt_path = resolve_path("dataset/train/train_ground_truth.tsv")
+    if not gt_path.exists():
+        print(f"Ground truth not found at {gt_path}; skipping recall evaluation.")
+        return 0.0, 0, 0
+
+    print(f"\nComputing blocking recall against ground truth ({gt_path.name})...", flush=True)
+    t0_eval = time.time()
+    df_cand = pd.read_parquet(output_path, columns=["source1_entity_id", "candidate_entity_id"])
+    cand_map = df_cand.groupby("source1_entity_id")["candidate_entity_id"].apply(set).to_dict()
+
+    gt_df = pd.read_csv(gt_path, sep="\t")
+    gt_filtered = gt_df[gt_df["source1_entity_id"].isin(target_s1_ids)]
+
+    total_true = 0
+    captured_true = 0
+    for _, row in gt_filtered.iterrows():
+        matches = row["matched_entity_ids"]
+        if pd.notna(matches) and str(matches).strip():
+            true_matches = set(x.strip() for x in str(matches).split(",") if x.strip())
+            total_true += len(true_matches)
+            cand_set = cand_map.get(row["source1_entity_id"], set())
+            captured_true += len(true_matches.intersection(cand_set))
+
+    recall = (captured_true / total_true * 100) if total_true > 0 else 0.0
+    print("\n" + "=" * 80, flush=True)
+    print(f"                 BLOCKING RECALL EVALUATION", flush=True)
+    print("=" * 80, flush=True)
+    print(f"Total True Matches in Ground Truth: {total_true:,}", flush=True)
+    print(f"True Matches Captured in Candidates: {captured_true:,}", flush=True)
+    print(f"==> BLOCKING RECALL: {recall:.4f}% ({captured_true:,} / {total_true:,})", flush=True)
+    print(f"Recall evaluation computed in {time.time() - t0_eval:.2f}s", flush=True)
+    print("=" * 80 + "\n", flush=True)
+    return recall, captured_true, total_true
 
 
 def process_blocking(
@@ -127,6 +201,9 @@ def process_blocking(
     batch_size: int = 50_000,
     top_k: int = 25,
     dataset_type: str = "train",
+    use_postal: bool = True,
+    common_threshold_pct: Optional[float] = None,
+    eval_recall: bool = True,
 ) -> Path:
     """
     Orchestrates candidate pair generation across countries (or a single target country).
@@ -140,6 +217,7 @@ def process_blocking(
         print(f"MODE: SAMPLE RUN on first {sample_size:,} Source 1 entities", flush=True)
     else:
         print("MODE: FULL RUN on Source 1 entities", flush=True)
+    print(f"CONFIG: Postal Code Key = {'ENABLED' if use_postal else 'DISABLED'} | Common Token Filter = {'Country-Aware (Dynamic)' if common_threshold_pct is None else f'{common_threshold_pct*100:.2f}% (Manual)'}", flush=True)
 
     # 1. Locate cleaned parquet files
     s1_path = resolve_path(f"dataset_processed/{dataset_type}_source1_clean.parquet")
@@ -172,6 +250,11 @@ def process_blocking(
 
     # 3. Load Source 1 entities
     cols = ["entity_id", "country", "cleaned_name", "cleaned_address"]
+    # Check if parquet has postal_code
+    s1_schema = pq.read_schema(str(s1_path))
+    if "postal_code" in s1_schema.names:
+        cols.append("postal_code")
+
     print(f"\nLoading Source 1 entities...", flush=True)
     t0_load = time.time()
     df_s1 = pd.read_parquet(s1_path, columns=cols)
@@ -212,14 +295,15 @@ def process_blocking(
         print(f"Processing Country: {country} ({n_s1_country:,} S1 queries vs {len(cands_country):,} candidates)")
         print(f"=======================================================")
 
-        # Build country inverted index
-        inv_idx, cand_ids, common_tokens = build_country_inverted_index(
-            cands_country, country, common_threshold_pct=0.005
+        # Build country inverted index and postal index
+        inv_idx, postal_idx, cand_ids, common_tokens, effective_thresh = build_country_inverted_index(
+            cands_country, country, common_threshold_pct=common_threshold_pct, use_postal=use_postal
         )
 
         s1_ids = s1_country["entity_id"].tolist()
         s1_names = s1_country["cleaned_name"].fillna("").tolist()
         s1_addrs = s1_country["cleaned_address"].fillna("").tolist()
+        s1_postals = s1_country["postal_code"].tolist() if "postal_code" in s1_country.columns else [None] * n_s1_country
 
         # Query in batches
         print(f"\nQuerying {n_s1_country:,} Source 1 entities in batches of {batch_size:,}...")
@@ -231,32 +315,35 @@ def process_blocking(
             b_s1_ids = s1_ids[b_start:b_end]
             b_s1_names = s1_names[b_start:b_end]
             b_s1_addrs = s1_addrs[b_start:b_end]
+            b_s1_postals = s1_postals[b_start:b_end]
 
             batch_s1_col = []
             batch_cand_col = []
             batch_country_col = []
             batch_score_col = []
 
-            for s1_eid, name, addr in zip(b_s1_ids, b_s1_names, b_s1_addrs):
+            for s1_eid, name, addr, pcode in zip(b_s1_ids, b_s1_names, b_s1_addrs, b_s1_postals):
                 q_tokens = get_tokens(name, addr) - common_tokens
-                if not q_tokens:
+                scores = Counter()
+
+                # 1. Primary blocking key: shared tokens
+                if q_tokens:
+                    for t in q_tokens:
+                        if t in inv_idx:
+                            scores.update(inv_idx[t][:1000])
+
+                # 2. Secondary blocking key: postal code
+                # Entities sharing a postal code are always retrieved as candidates even if name tokens don't overlap
+                if use_postal and pcode and pd.notna(pcode):
+                    p_str = str(pcode).strip()
+                    if p_str and p_str in postal_idx:
+                        for cid in postal_idx[p_str]:
+                            scores[cid] += 100
+
+                if not scores:
                     continue
 
-                # Find postings for query tokens
-                postings_list = [inv_idx[t] for t in q_tokens if t in inv_idx]
-                if not postings_list:
-                    continue
-
-                if len(postings_list) == 1:
-                    # Single token matched: top candidates all have score = 1
-                    top_matches = [(cid, 1) for cid in postings_list[0][:top_k]]
-                else:
-                    # Count occurrences of candidate indices across matched tokens
-                    scores = Counter()
-                    for p in postings_list:
-                        scores.update(p)
-                    top_matches = scores.most_common(top_k)
-
+                top_matches = scores.most_common(top_k)
                 for cid, score in top_matches:
                     batch_s1_col.append(s1_eid)
                     batch_cand_col.append(cand_ids[cid])
@@ -338,6 +425,11 @@ def process_blocking(
         print(f"  [OK]: Projected runtime is {projected_hours:.2f} hours (<= 1.0 hour limit).")
     print("-" * 80)
 
+    # Evaluate recall against ground truth if train dataset
+    gt_path = resolve_path("dataset/train/train_ground_truth.tsv")
+    if dataset_type == "train" and eval_recall and gt_path.exists():
+        evaluate_blocking_recall(output_path, set(df_s1["entity_id"]), gt_path)
+
     return output_path
 
 
@@ -382,8 +474,36 @@ def main():
         choices=["train", "test"],
         help="Dataset type to process (train or test)",
     )
+    parser.add_argument(
+        "--no_postal",
+        action="store_true",
+        help="Disable postal code secondary blocking key",
+    )
+    parser.add_argument(
+        "--common_threshold",
+        type=float,
+        default=None,
+        help="Override country-aware common token threshold (e.g. 0.05 for 5%)",
+    )
+    parser.add_argument(
+        "--yesterday",
+        action="store_true",
+        help="Run yesterday's baseline configuration (no postal key, 5% fixed threshold)",
+    )
+    parser.add_argument(
+        "--no_eval",
+        action="store_true",
+        help="Skip automatic recall evaluation against ground truth",
+    )
 
     args = parser.parse_args()
+
+    use_postal = not args.no_postal
+    common_threshold = args.common_threshold
+    if args.yesterday:
+        use_postal = False
+        common_threshold = 0.05
+
     process_blocking(
         sample_size=args.sample,
         target_country=args.country,
@@ -391,6 +511,9 @@ def main():
         batch_size=args.batch_size,
         top_k=args.top_k,
         dataset_type=args.dataset_type,
+        use_postal=use_postal,
+        common_threshold_pct=common_threshold,
+        eval_recall=not args.no_eval,
     )
 
 

@@ -72,6 +72,9 @@ def main():
         "same_first_name_token",
         "shared_token_count",
     ]
+    for col in ["name_tfidf_cosine", "address_tfidf_cosine"]:
+        if col in df.columns:
+            feature_cols.append(col)
 
     X = df[feature_cols]
     y = df['label']
