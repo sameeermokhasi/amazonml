@@ -68,7 +68,7 @@ def main():
     df_feat['probability'] = preds
     
     # 5. Apply chosen threshold
-    THRESHOLD = 0.50
+    THRESHOLD = 0.55
     AMBIGUITY_MARGIN = 0.02
     print(f"\nApplying threshold {THRESHOLD} to determine matches...")
     print(f"Ambiguity margin: {AMBIGUITY_MARGIN} (drop entity if top two candidates are within this gap)")
@@ -76,16 +76,9 @@ def main():
     
     # 5b. Ambiguity filter
     if AMBIGUITY_MARGIN > 0:
-        ambiguous_entities = set()
-        for s1_id, grp in df_matches.groupby('source1_entity_id'):
-            if len(grp) >= 2:
-                sorted_probs = grp['probability'].sort_values(ascending=False).values
-                gap = sorted_probs[0] - sorted_probs[1]
-                if gap < AMBIGUITY_MARGIN:
-                    ambiguous_entities.add(s1_id)
-        if ambiguous_entities:
-            print(f"  Dropped {len(ambiguous_entities)} ambiguous entities (top-2 gap < {AMBIGUITY_MARGIN})")
-            df_matches = df_matches[~df_matches['source1_entity_id'].isin(ambiguous_entities)]
+        print("  Skipping ambiguity filter (S1 entities can have multiple legitimate high-prob matches from S2/S3)")
+        # We don't drop ambiguous entities because S1 can match both S2 and S3 versions of the business
+        # which would result in two candidates with very high probability and a tiny gap.
     
     # 6. Apply one-to-one resolution
     print("\nApplying one-to-one resolution (candidate can only match one S1 entity)...")

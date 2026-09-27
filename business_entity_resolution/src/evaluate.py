@@ -7,6 +7,7 @@ def resolve_path(rel_path_str: str) -> Path:
         Path("..") / rel_path_str,
         Path(__file__).resolve().parent.parent / rel_path_str,
         Path(__file__).resolve().parent.parent.parent / rel_path_str,
+        Path("/Users/yashaswini/Desktop") / rel_path_str,
     ]
     for candidate in candidates:
         if candidate.exists():
