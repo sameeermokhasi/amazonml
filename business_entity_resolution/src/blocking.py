@@ -340,7 +340,7 @@ def process_blocking(
                             # If we've already retrieved enough candidates from rare tokens,
                             # skip extremely common tokens that would slow down the query.
                             # But always process at least one token (or up to 10k candidates).
-                            if candidates_retrieved > 15000 and len(postings) > 5000:
+                            if candidates_retrieved > 5000 and len(postings) > 2000:
                                 continue
                                 
                             scores.update(postings)
