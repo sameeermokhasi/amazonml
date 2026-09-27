@@ -451,26 +451,28 @@ def load_source_records(
         else:
             df = pd.read_parquet(clean_path, columns=available_cols)
 
-        for _, row in df.iterrows():
-            eid = str(row["entity_id"])
-            raw_name = row.get("business_name", "")
-            raw_addr = row.get("business_address", "")
-            c_name = row.get("cleaned_name")
-            if pd.isna(c_name) or not c_name:
-                c_name = clean_text(raw_name)
-            c_addr = row.get("cleaned_address")
-            if pd.isna(c_addr) or not c_addr:
-                c_addr = clean_text(raw_addr)
-
-            p_code = row.get("postal_code")
-            h_num = row.get("house_number")
-            if pd.isna(p_code) or not p_code:
+        if needed_ids:
+            df = df[df["entity_id"].isin(needed_ids)]
+            
+        df = df.fillna("")
+        for row in df.itertuples(index=False):
+            eid = str(row.entity_id)
+            raw_name = str(getattr(row, "business_name", ""))
+            raw_addr = str(getattr(row, "business_address", ""))
+            
+            c_name = str(getattr(row, "cleaned_name", ""))
+            if not c_name: c_name = clean_text(raw_name)
+                
+            c_addr = str(getattr(row, "cleaned_address", ""))
+            if not c_addr: c_addr = clean_text(raw_addr)
+                
+            p_code = str(getattr(row, "postal_code", ""))
+            h_num = str(getattr(row, "house_number", ""))
+            if not p_code or not h_num:
                 sig = extract_address_signals(raw_addr)
-                p_code = sig["postal_code"]
-            if pd.isna(h_num) or not h_num:
-                sig = extract_address_signals(raw_addr)
-                h_num = sig["house_number"]
-
+                if not p_code: p_code = sig["postal_code"] or ""
+                if not h_num: h_num = sig["house_number"] or ""
+            
             records[eid] = {
                 "entity_id": eid,
                 "business_name": raw_name,
@@ -479,7 +481,7 @@ def load_source_records(
                 "cleaned_address": c_addr,
                 "postal_code": p_code,
                 "house_number": h_num,
-                "country": row.get("country", ""),
+                "country": str(getattr(row, "country", "")),
             }
         print(f"    Loaded {len(records):,} records from cleaned parquet for {label}.")
         return records
@@ -714,19 +716,26 @@ def generate_candidate_features(
 
     df_feat = pd.DataFrame(features)
 
+    batch_size = 100_000
     # 10. TF-IDF Cosine Similarity between Cleaned Names
     if name_vectorizer is not None and len(s1_names) > 0:
-        s1_n_vecs = name_vectorizer.transform(s1_names)
-        c_n_vecs = name_vectorizer.transform(c_names)
-        df_feat["name_tfidf_cosine"] = np.asarray(s1_n_vecs.multiply(c_n_vecs).sum(axis=1)).ravel().astype(float)
+        n_cosines = []
+        for i in range(0, len(s1_names), batch_size):
+            s1_b = name_vectorizer.transform(s1_names[i:i+batch_size])
+            c_b = name_vectorizer.transform(c_names[i:i+batch_size])
+            n_cosines.append(np.asarray(s1_b.multiply(c_b).sum(axis=1)).ravel())
+        df_feat["name_tfidf_cosine"] = np.concatenate(n_cosines).astype(float)
     else:
         df_feat["name_tfidf_cosine"] = 0.0
 
     # 11. TF-IDF Cosine Similarity between Cleaned Addresses
     if addr_vectorizer is not None and len(s1_addrs) > 0:
-        s1_a_vecs = addr_vectorizer.transform(s1_addrs)
-        c_a_vecs = addr_vectorizer.transform(c_addrs)
-        df_feat["address_tfidf_cosine"] = np.asarray(s1_a_vecs.multiply(c_a_vecs).sum(axis=1)).ravel().astype(float)
+        a_cosines = []
+        for i in range(0, len(s1_addrs), batch_size):
+            s1_b = addr_vectorizer.transform(s1_addrs[i:i+batch_size])
+            c_b = addr_vectorizer.transform(c_addrs[i:i+batch_size])
+            a_cosines.append(np.asarray(s1_b.multiply(c_b).sum(axis=1)).ravel())
+        df_feat["address_tfidf_cosine"] = np.concatenate(a_cosines).astype(float)
     else:
         df_feat["address_tfidf_cosine"] = 0.0
 
@@ -845,8 +854,8 @@ def run_feature_pipeline(
         all_corpus_names = [rec.get("cleaned_name", "") for rec in entity_lookup.values() if rec.get("cleaned_name")]
         all_corpus_addrs = [rec.get("cleaned_address", "") for rec in entity_lookup.values() if rec.get("cleaned_address")]
 
-        name_vectorizer = TfidfVectorizer(max_features=50000, lowercase=False, token_pattern=r'(?u)\b\w+\b')
-        addr_vectorizer = TfidfVectorizer(max_features=50000, lowercase=False, token_pattern=r'(?u)\b\w+\b')
+        name_vectorizer = TfidfVectorizer(max_features=50000, lowercase=False, analyzer='char_wb', ngram_range=(2, 4))
+        addr_vectorizer = TfidfVectorizer(max_features=50000, lowercase=False, analyzer='char_wb', ngram_range=(2, 4))
 
         name_vectorizer.fit(all_corpus_names)
         addr_vectorizer.fit(all_corpus_addrs)

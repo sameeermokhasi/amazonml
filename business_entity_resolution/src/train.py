@@ -12,7 +12,7 @@ def resolve_path(rel_path_str: str) -> Path:
         Path(rel_path_str),
         Path("..") / rel_path_str,
         Path(__file__).resolve().parent.parent / rel_path_str,
-        Path(__file__).resolve().parent.parent.parent / rel_path_str,
+        Path("/Users/yashaswini/Desktop") / rel_path_str,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -79,10 +79,16 @@ def main():
     X = df[feature_cols]
     y = df['label']
 
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    groups = df['source1_entity_id']
+    from sklearn.model_selection import GroupShuffleSplit
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, val_idx = next(gss.split(X, y, groups))
+    
+    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
     
     print("Training HistGradientBoostingClassifier model...")
-    model = HistGradientBoostingClassifier(random_state=42, max_iter=100)
+    model = HistGradientBoostingClassifier(random_state=42, max_iter=300, learning_rate=0.05, l2_regularization=0.1)
     model.fit(X_train, y_train)
     
     model_path = resolve_path("models/lgbm_matcher.joblib")

@@ -45,7 +45,7 @@ def resolve_path(rel_path_str: str) -> Path:
         Path(rel_path_str),
         Path("..") / rel_path_str,
         Path(__file__).resolve().parent.parent / rel_path_str,
-        Path("/Users/yashaswini/Desktop") / rel_path_str,
+        Path(__file__).resolve().parent.parent.parent / rel_path_str,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -330,21 +330,9 @@ def process_blocking(
 
                 # 1. Primary blocking key: shared tokens
                 if q_tokens:
-                    # Sort tokens by rarity (shortest posting list first)
-                    sorted_tokens = sorted(q_tokens, key=lambda x: len(inv_idx.get(x, [])))
-                    candidates_retrieved = 0
-                    for t in sorted_tokens:
+                    for t in q_tokens:
                         if t in inv_idx:
-                            postings = inv_idx[t]
-                            
-                            # If we've already retrieved enough candidates from rare tokens,
-                            # skip extremely common tokens that would slow down the query.
-                            # But always process at least one token (or up to 10k candidates).
-                            if candidates_retrieved > 15000 and len(postings) > 5000:
-                                continue
-                                
-                            scores.update(postings)
-                            candidates_retrieved += len(postings)
+                            scores.update(inv_idx[t][:1000])
 
                 # 2. Secondary blocking key: postal code
                 # Entities sharing a postal code are always retrieved as candidates even if name tokens don't overlap
@@ -478,8 +466,8 @@ def main():
     parser.add_argument(
         "--top_k",
         type=int,
-        default=200,
-        help="Maximum candidate records to keep per Source 1 entity (default: 200)",
+        default=50,
+        help="Maximum candidate records to keep per Source 1 entity (default: 50)",
     )
     parser.add_argument(
         "--dataset_type",
