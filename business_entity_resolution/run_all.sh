@@ -11,11 +11,15 @@ echo "[1/3] Running Blocking Pipeline..."
 python3 src/blocking.py --output candidate_pairs.parquet --top_k 20
 
 echo ""
-echo "[2/3] Running Training Pipeline..."
-python3 src/train.py
+echo "[2/4] Running Features Pipeline..."
+python3 src/features.py --candidates dataset_processed/candidate_pairs.parquet --output dataset_processed/features.parquet
 
 echo ""
-echo "[3/3] Running Evaluation Pipeline..."
+echo "[3/4] Running Training Pipeline..."
+python3 src/train.py --features dataset_processed/features.parquet
+
+echo ""
+echo "[4/4] Running Evaluation Pipeline..."
 python3 src/evaluate.py
 
 echo ""
