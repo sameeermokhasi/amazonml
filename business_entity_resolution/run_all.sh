@@ -8,7 +8,7 @@ echo "================================================="
 echo ""
 echo "[1/3] Running Blocking Pipeline..."
 # We use top_k=300 for maximum recall
-python3 src/blocking.py --output candidate_pairs.parquet --top_k 20
+python3 src/blocking.py --output candidate_pairs.parquet --top_k 50
 
 echo ""
 echo "[2/4] Running Features Pipeline..."
