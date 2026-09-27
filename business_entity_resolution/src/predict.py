@@ -33,7 +33,7 @@ def main():
     # run_cmd("python3 src/preprocess.py --dataset_type test")
 
     # 2. Blocking
-    run_cmd("python3 src/blocking.py --dataset_type test --output test_candidate_pairs.parquet --batch_size 100000 --top_k 15")
+    run_cmd("python3 src/blocking.py --dataset_type test --output test_candidate_pairs.parquet --batch_size 100000 --top_k 300")
 
     # 3. Features
     run_cmd("python3 src/features.py --dataset_type test --candidates dataset_processed/test_candidate_pairs.parquet --output dataset_processed/test_features.parquet")
